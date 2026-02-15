@@ -2,9 +2,12 @@ import {
   buildDefaultFormData,
   CopyItem,
   FormData,
+  generateImageAsset,
   generateCopyCandidates,
+  ImageGenerateResult,
   LENGTH_OPTIONS,
   PLATFORM_OPTIONS,
+  RESULT_COUNT_OPTIONS,
   TONE_OPTIONS,
 } from '../../utils/generator'
 
@@ -15,11 +18,21 @@ const MAX_HISTORY = 20
 interface HistoryItem {
   id: string
   createdAt: number
-  prompt: Pick<FormData, 'topic' | 'scene' | 'audience' | 'platform' | 'tone' | 'length'>
+  prompt: Pick<
+    FormData,
+    'topic' | 'scene' | 'audience' | 'requirements' | 'platform' | 'tone' | 'length' | 'resultCount' | 'diversity'
+  >
   results: CopyItem[]
 }
 
-function safeIndex<T extends string>(options: readonly T[], value: T): number {
+interface ImageCardState {
+  loading: boolean
+  url: string
+  error: string
+  revisedPrompt: string
+}
+
+function safeIndex<T>(options: readonly T[], value: T): number {
   const index = options.findIndex((item) => item === value)
   return index >= 0 ? index : 0
 }
@@ -29,17 +42,26 @@ Component({
     platformOptions: PLATFORM_OPTIONS,
     toneOptions: TONE_OPTIONS,
     lengthOptions: LENGTH_OPTIONS,
+    resultCountOptions: RESULT_COUNT_OPTIONS,
+    platformCards: [
+      { key: '朋友圈', title: '朋友圈文案', subtitle: '偏生活化，熟人社交语境' },
+      { key: '小红书', title: '小红书文案', subtitle: '更强调种草感与真实体验' },
+      { key: '微博', title: '微博文案', subtitle: '更快节奏，观点更聚焦' },
+    ],
     platformIndex: 0,
     toneIndex: 0,
     lengthIndex: 1,
+    resultCountIndex: 1,
     formData: buildDefaultFormData() as FormData,
+    images: [] as string[],
     loading: false,
     results: [] as CopyItem[],
     history: [] as HistoryItem[],
     activeTab: 'results',
     showSourceTag: true,
-    lastGenerateSource: 'none',
+    lastGenerateSource: 'none' as 'none' | 'mock' | 'cloud',
     lastGenerateReason: '',
+    imageStates: {} as Record<string, ImageCardState>,
   },
 
   lifetimes: {
@@ -57,6 +79,7 @@ Component({
             platformIndex: safeIndex(this.data.platformOptions, mergedFormData.platform),
             toneIndex: safeIndex(this.data.toneOptions, mergedFormData.tone),
             lengthIndex: safeIndex(this.data.lengthOptions, mergedFormData.length),
+            resultCountIndex: safeIndex(this.data.resultCountOptions, mergedFormData.resultCount),
           })
         }
       } catch (error) {
@@ -75,7 +98,7 @@ Component({
   methods: {
     onTextInput(e: any) {
       const { field } = e.currentTarget.dataset
-      const value = (e.detail.value || '').trimStart()
+      const value = (e.detail.value || '').trimStart().slice(0, 200)
       if (!field) return
       this.setData({
         [`formData.${field}`]: value,
@@ -106,6 +129,58 @@ Component({
       })
     },
 
+    onResultCountChange(e: any) {
+      const index = Number(e.detail.value)
+      this.setData({
+        resultCountIndex: index,
+        'formData.resultCount': this.data.resultCountOptions[index],
+      })
+    },
+
+    onSelectPlatformCard(e: any) {
+      const { platform } = e.currentTarget.dataset
+      const index = this.data.platformOptions.findIndex((item) => item === platform)
+      if (index < 0) return
+      this.setData({
+        platformIndex: index,
+        'formData.platform': platform,
+      })
+    },
+
+    onDiversityChange(e: any) {
+      const value = Number(e.detail.value) || 70
+      this.setData({
+        'formData.diversity': value,
+      })
+    },
+
+    onPickImages() {
+      wx.chooseMedia({
+        count: 9 - this.data.images.length,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+        success: (res) => {
+          const paths = res.tempFiles.map((item) => item.tempFilePath).filter(Boolean)
+          const next = [...this.data.images, ...paths].slice(0, 9)
+          this.setData({
+            images: next,
+            'formData.imageCount': next.length,
+          })
+        },
+      })
+    },
+
+    onRemoveImage(e: any) {
+      const index = Number(e.currentTarget.dataset.index)
+      if (Number.isNaN(index)) return
+      const next = [...this.data.images]
+      next.splice(index, 1)
+      this.setData({
+        images: next,
+        'formData.imageCount': next.length,
+      })
+    },
+
     onSwitchChange(e: any) {
       const { field } = e.currentTarget.dataset
       const value = !!e.detail.value
@@ -116,27 +191,35 @@ Component({
     },
 
     async onGenerate() {
-      const { formData, history } = this.data
+      const { formData, history, images } = this.data
       if (!formData.topic.trim()) {
-        wx.showToast({ title: '先输入主题', icon: 'none' })
+        wx.showToast({ title: '先输入一个主题', icon: 'none' })
         return
+      }
+
+      const formDataForGenerate: FormData = {
+        ...formData,
+        imageCount: images.length,
       }
 
       this.setData({ loading: true })
       try {
-        const generated = await generateCopyCandidates(formData)
+        const generated = await generateCopyCandidates(formDataForGenerate)
         const results = generated.items
 
         const historyItem: HistoryItem = {
           id: `his_${Date.now()}`,
           createdAt: Date.now(),
           prompt: {
-            topic: formData.topic,
-            scene: formData.scene,
-            audience: formData.audience,
-            platform: formData.platform,
-            tone: formData.tone,
-            length: formData.length,
+            topic: formDataForGenerate.topic,
+            scene: formDataForGenerate.scene,
+            audience: formDataForGenerate.audience,
+            requirements: formDataForGenerate.requirements,
+            platform: formDataForGenerate.platform,
+            tone: formDataForGenerate.tone,
+            length: formDataForGenerate.length,
+            resultCount: formDataForGenerate.resultCount,
+            diversity: formDataForGenerate.diversity,
           },
           results,
         }
@@ -147,13 +230,15 @@ Component({
           results,
           history: nextHistory,
           activeTab: 'results',
+          formData: formDataForGenerate,
           lastGenerateSource: generated.source,
           lastGenerateReason: generated.reason || '',
+          imageStates: {},
         })
 
         try {
           wx.setStorageSync(STORAGE_HISTORY_KEY, nextHistory)
-          wx.setStorageSync(STORAGE_DRAFT_KEY, formData)
+          wx.setStorageSync(STORAGE_DRAFT_KEY, formDataForGenerate)
         } catch (error) {
           console.warn('save history failed', error)
         }
@@ -183,6 +268,50 @@ Component({
       })
     },
 
+    async onGenerateImage(e: any) {
+      const { id } = e.currentTarget.dataset
+      const item = this.data.results.find((entry) => entry.id === id)
+      if (!item) return
+
+      const prompt = [item.content, ...(item.hashtags || [])].join('\n').trim()
+      if (!prompt) {
+        wx.showToast({ title: '文案为空，无法配图', icon: 'none' })
+        return
+      }
+
+      this.setData({
+        [`imageStates.${id}`]: {
+          loading: true,
+          url: '',
+          error: '',
+          revisedPrompt: '',
+        },
+      })
+
+      try {
+        const generatedImage: ImageGenerateResult = await generateImageAsset(prompt)
+        this.setData({
+          [`imageStates.${id}`]: {
+            loading: false,
+            url: generatedImage.imageUrl,
+            error: '',
+            revisedPrompt: generatedImage.revisedPrompt,
+          },
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'IMAGE_UNKNOWN_ERROR'
+        this.setData({
+          [`imageStates.${id}`]: {
+            loading: false,
+            url: '',
+            error: message,
+            revisedPrompt: '',
+          },
+        })
+        wx.showToast({ title: '配图失败', icon: 'none' })
+      }
+    },
+
     onRewrite(e: any) {
       const { id } = e.currentTarget.dataset
       const { results } = this.data
@@ -190,11 +319,7 @@ Component({
       if (targetIndex < 0) return
 
       const target = results[targetIndex]
-      const rewriteTips = [
-        '补一句当下感受，让文案更有画面感。',
-        '把语序再口语一点，像在和朋友聊天。',
-        '收尾加一个开放问题，提高互动率。',
-      ]
+      const rewriteTips = ['换个叙事视角再写一版。', '把节奏再短促一点。', '最后加一个互动问题。', '加强情绪细节。']
       const rewriteTip = rewriteTips[Math.floor(Math.random() * rewriteTips.length)]
 
       const rewritten = {
@@ -224,10 +349,13 @@ Component({
         formData: {
           ...this.data.formData,
           ...target.prompt,
+          imageCount: 0,
         },
         platformIndex: safeIndex(this.data.platformOptions, target.prompt.platform),
         toneIndex: safeIndex(this.data.toneOptions, target.prompt.tone),
         lengthIndex: safeIndex(this.data.lengthOptions, target.prompt.length),
+        resultCountIndex: safeIndex(this.data.resultCountOptions, target.prompt.resultCount),
+        images: [],
         results: target.results,
         activeTab: 'results',
       })
