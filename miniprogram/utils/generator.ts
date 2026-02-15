@@ -43,6 +43,8 @@ type GeneratorMode = 'mock' | 'cloud'
 const GENERATOR_MODE: GeneratorMode = 'cloud'
 const DEEPSEEK_PROVIDER = 'deepseek'
 const DEEPSEEK_MODEL = 'deepseek-v3.2'
+const ENABLE_MOCK_FALLBACK = true
+const RECOVERABLE_REASONS = new Set(['INVALID_MODEL_JSON', 'EMPTY_MODEL_ITEMS', 'EMPTY_RESPONSE'])
 
 function buildHashtags(topic: string, platform: Platform): string[] {
   const seed = topic.trim() || '今日分享'
@@ -114,7 +116,7 @@ function normalizeCopyItem(input: Partial<CopyItem>, formData: FormData, index: 
   }
 }
 
-function buildModelPrompt(formData: FormData): string {
+function buildModelPrompt(formData: FormData, strictJson = false): string {
   const lengthHint =
     formData.length === '短'
       ? '每条 35-60 字'
@@ -140,6 +142,7 @@ function buildModelPrompt(formData: FormData): string {
     `是否包含 hashtag：${formData.withHashtags ? '是' : '否'}`,
     '输出结构（严格一致）：',
     '[{"title":"","content":"","hashtags":[],"platform":"","tone":""}]',
+    strictJson ? '再次强调：必须是可被 JSON.parse 直接解析的合法 JSON。' : '',
   ].join('\n')
 }
 
@@ -238,6 +241,52 @@ async function requestGenerateByCloudAI(formData: FormData): Promise<CloudGenera
   }
 }
 
+async function requestGenerateByCloudAIStrictJson(formData: FormData): Promise<CloudGenerateResponse> {
+  const ai = (wx.cloud as any)?.extend?.AI
+  if (!ai || typeof ai.createModel !== 'function') {
+    throw new Error('AI_EXT_NOT_READY')
+  }
+
+  const res = await ai.createModel(DEEPSEEK_PROVIDER).streamText({
+    data: {
+      model: DEEPSEEK_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: buildModelPrompt(formData, true),
+        },
+      ],
+    },
+  })
+
+  let output = ''
+  if (res?.textStream && typeof res.textStream[Symbol.asyncIterator] === 'function') {
+    for await (const text of res.textStream as AsyncIterable<string>) {
+      if (text) output += text
+    }
+  }
+
+  return {
+    items: parseModelItems(output, formData),
+  }
+}
+
+function normalizeErrorReason(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  if (error && typeof error === 'object') {
+    const maybeErr = error as { errCode?: number | string; errMsg?: string; message?: string }
+    if (maybeErr.errCode !== undefined || maybeErr.errMsg) {
+      return `errCode:${String(maybeErr.errCode ?? 'UNKNOWN')}|errMsg:${maybeErr.errMsg || 'UNKNOWN'}`
+    }
+    if (maybeErr.message) {
+      return maybeErr.message
+    }
+  }
+  return 'UNKNOWN_ERROR'
+}
+
 export function buildDefaultFormData(): FormData {
   return {
     topic: '',
@@ -264,9 +313,22 @@ export async function generateCopyCandidates(formData: FormData): Promise<Genera
 
   try {
     const response = await requestGenerateByCloudAI(formData)
-    const items = Array.isArray(response.items) ? response.items : []
+    let items = Array.isArray(response.items) ? response.items : []
     if (!items.length) {
       throw new Error('EMPTY_RESPONSE')
+    }
+
+    // Retry once with stricter JSON constraints when response is unstable.
+    if (items.length < 3) {
+      try {
+        const retryRes = await requestGenerateByCloudAIStrictJson(formData)
+        const retryItems = Array.isArray(retryRes.items) ? retryRes.items : []
+        if (retryItems.length >= items.length) {
+          items = retryItems
+        }
+      } catch (error) {
+        // Ignore retry failure and keep first response.
+      }
     }
 
     return {
@@ -274,7 +336,27 @@ export async function generateCopyCandidates(formData: FormData): Promise<Genera
       source: 'cloud',
     }
   } catch (error) {
-    const reason = error instanceof Error ? error.message : 'UNKNOWN_ERROR'
+    const reason = normalizeErrorReason(error)
+    if (RECOVERABLE_REASONS.has(reason)) {
+      try {
+        const retryRes = await requestGenerateByCloudAIStrictJson(formData)
+        const retryItems = Array.isArray(retryRes.items) ? retryRes.items : []
+        if (retryItems.length) {
+          return {
+            items: retryItems.map((item, index) => normalizeCopyItem(item, formData, index)).slice(0, 3),
+            source: 'cloud',
+          }
+        }
+      } catch (retryError) {
+        const retryReason = normalizeErrorReason(retryError)
+        console.warn('cloud strict retry failed', retryReason)
+      }
+    }
+
+    if (!ENABLE_MOCK_FALLBACK) {
+      throw new Error(reason)
+    }
+
     console.warn('cloud generate failed, fallback to mock', reason)
     await new Promise((resolve) => setTimeout(resolve, 300))
     return {
