@@ -39,8 +39,9 @@ interface GenerateResult {
 
 type GeneratorMode = 'mock' | 'cloud'
 
-const GENERATOR_MODE: GeneratorMode = 'mock'
-const GENERATE_API_URL = ''
+const GENERATOR_MODE: GeneratorMode = 'cloud'
+const DEEPSEEK_PROVIDER = 'deepseek'
+const DEEPSEEK_MODEL = 'deepseek-v3.2'
 
 function buildHashtags(topic: string, platform: Platform): string[] {
   const seed = topic.trim() || '今日分享'
@@ -111,23 +112,92 @@ function normalizeCopyItem(input: Partial<CopyItem>, formData: FormData, index: 
   }
 }
 
-function requestGenerate(formData: FormData): Promise<CloudGenerateResponse> {
-  return new Promise((resolve, reject) => {
-    wx.request({
-      url: GENERATE_API_URL,
-      method: 'POST',
-      data: formData,
-      timeout: 10000,
-      success: (res) => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`HTTP_${res.statusCode}`))
-          return
-        }
-        resolve((res.data || {}) as CloudGenerateResponse)
-      },
-      fail: (error) => reject(error),
-    })
+function buildModelPrompt(formData: FormData): string {
+  return [
+    '你是中文社媒文案助手，擅长朋友圈/小红书/微博。',
+    '请基于以下信息生成 3 条文案候选，并仅输出 JSON 数组，不要输出其他解释。',
+    `平台：${formData.platform}`,
+    `主题：${formData.topic}`,
+    `场景：${formData.scene || '无'}`,
+    `受众：${formData.audience || '无'}`,
+    `语气：${formData.tone}`,
+    `长度：${formData.length}`,
+    `是否包含 emoji：${formData.withEmoji ? '是' : '否'}`,
+    `是否包含 hashtag：${formData.withHashtags ? '是' : '否'}`,
+    'JSON 数组内每个对象格式如下：',
+    '{"title":"", "content":"", "hashtags":[""], "platform":"", "tone":""}',
+  ].join('\n')
+}
+
+function extractJsonText(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced?.[1]) {
+    return fenced[1].trim()
+  }
+
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  if (start >= 0 && end > start) {
+    return raw.slice(start, end + 1)
+  }
+
+  return raw.trim()
+}
+
+function parseModelItems(raw: string, formData: FormData): CopyItem[] {
+  const jsonText = extractJsonText(raw)
+  const parsed = JSON.parse(jsonText)
+  if (!Array.isArray(parsed)) {
+    throw new Error('INVALID_MODEL_JSON')
+  }
+
+  const normalized = parsed
+    .map((item, index) => normalizeCopyItem((item || {}) as Partial<CopyItem>, formData, index))
+    .filter((item) => !!item.content.trim())
+    .slice(0, 3)
+
+  if (!normalized.length) {
+    throw new Error('EMPTY_MODEL_ITEMS')
+  }
+  return normalized
+}
+
+async function requestGenerateByCloudAI(formData: FormData): Promise<CloudGenerateResponse> {
+  const ai = (wx.cloud as any)?.extend?.AI
+  if (!ai || typeof ai.createModel !== 'function') {
+    throw new Error('AI_EXT_NOT_READY')
+  }
+
+  const res = await ai.createModel(DEEPSEEK_PROVIDER).streamText({
+    data: {
+      model: DEEPSEEK_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: buildModelPrompt(formData),
+        },
+      ],
+    },
   })
+
+  let output = ''
+  for await (const event of res.eventStream as AsyncIterable<{ data: string }>) {
+    if (!event?.data) continue
+    if (event.data === '[DONE]') break
+    try {
+      const data = JSON.parse(event.data)
+      const text = data?.choices?.[0]?.delta?.content
+      if (text) {
+        output += text
+      }
+    } catch (error) {
+      continue
+    }
+  }
+
+  return {
+    items: parseModelItems(output, formData),
+  }
 }
 
 export function buildDefaultFormData(): FormData {
@@ -144,7 +214,7 @@ export function buildDefaultFormData(): FormData {
 }
 
 export async function generateCopyCandidates(formData: FormData): Promise<GenerateResult> {
-  const shouldUseCloud = GENERATOR_MODE === 'cloud' && !!GENERATE_API_URL
+  const shouldUseCloud = GENERATOR_MODE === 'cloud'
   if (!shouldUseCloud) {
     await new Promise((resolve) => setTimeout(resolve, 500))
     return {
@@ -153,14 +223,23 @@ export async function generateCopyCandidates(formData: FormData): Promise<Genera
     }
   }
 
-  const response = await requestGenerate(formData)
-  const items = Array.isArray(response.items) ? response.items : []
-  if (!items.length) {
-    throw new Error('EMPTY_RESPONSE')
-  }
+  try {
+    const response = await requestGenerateByCloudAI(formData)
+    const items = Array.isArray(response.items) ? response.items : []
+    if (!items.length) {
+      throw new Error('EMPTY_RESPONSE')
+    }
 
-  return {
-    items: items.map((item, index) => normalizeCopyItem(item, formData, index)).slice(0, 3),
-    source: 'cloud',
+    return {
+      items: items.map((item, index) => normalizeCopyItem(item, formData, index)).slice(0, 3),
+      source: 'cloud',
+    }
+  } catch (error) {
+    console.warn('cloud generate failed, fallback to mock', error)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return {
+      items: buildMockResults(formData),
+      source: 'mock',
+    }
   }
 }
