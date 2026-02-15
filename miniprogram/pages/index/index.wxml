@@ -1,0 +1,98 @@
+<navigation-bar title="文案生成器" back="{{false}}" color="black" background="#F7F8FA"></navigation-bar>
+<scroll-view class="scrollarea" scroll-y type="list">
+  <view class="page">
+    <view class="hero">
+      <text class="hero-title">朋友圈 / 小红书 / 微博 文案生成器</text>
+      <text class="hero-subtitle">输入主题，快速生成 3 条可直接发布的文案草稿</text>
+    </view>
+
+    <view class="panel">
+      <view class="field">
+        <text class="label">主题</text>
+        <input class="input" placeholder="例如：周末露营、健身打卡、读书感想" value="{{formData.topic}}" data-field="topic" bindinput="onTextInput" />
+      </view>
+
+      <view class="field">
+        <text class="label">场景</text>
+        <input class="input" placeholder="例如：下班后、咖啡店、旅行途中" value="{{formData.scene}}" data-field="scene" bindinput="onTextInput" />
+      </view>
+
+      <view class="field">
+        <text class="label">受众</text>
+        <input class="input" placeholder="例如：朋友、同事、宝妈、学生" value="{{formData.audience}}" data-field="audience" bindinput="onTextInput" />
+      </view>
+
+      <view class="picker-row">
+        <picker class="picker" mode="selector" range="{{platformOptions}}" value="{{platformIndex}}" bindchange="onPlatformChange">
+          <view class="picker-inner">
+            <text class="picker-label">平台</text>
+            <text class="picker-value">{{formData.platform}}</text>
+          </view>
+        </picker>
+
+        <picker class="picker" mode="selector" range="{{toneOptions}}" value="{{toneIndex}}" bindchange="onToneChange">
+          <view class="picker-inner">
+            <text class="picker-label">语气</text>
+            <text class="picker-value">{{formData.tone}}</text>
+          </view>
+        </picker>
+
+        <picker class="picker" mode="selector" range="{{lengthOptions}}" value="{{lengthIndex}}" bindchange="onLengthChange">
+          <view class="picker-inner">
+            <text class="picker-label">长度</text>
+            <text class="picker-value">{{formData.length}}</text>
+          </view>
+        </picker>
+      </view>
+
+      <view class="switch-row">
+        <view class="switch-item">
+          <text>Emoji</text>
+          <switch checked="{{formData.withEmoji}}" data-field="withEmoji" bindchange="onSwitchChange" color="#1f8cff" />
+        </view>
+        <view class="switch-item">
+          <text>Hashtag</text>
+          <switch checked="{{formData.withHashtags}}" data-field="withHashtags" bindchange="onSwitchChange" color="#1f8cff" />
+        </view>
+      </view>
+
+      <button class="generate-btn" bindtap="onGenerate" loading="{{loading}}" disabled="{{loading}}">{{loading ? '生成中...' : '生成 3 条文案'}}</button>
+    </view>
+
+    <view class="tabs">
+      <view class="tab {{activeTab === 'results' ? 'active' : ''}}" data-tab="results" bindtap="onChangeTab">结果</view>
+      <view class="tab {{activeTab === 'history' ? 'active' : ''}}" data-tab="history" bindtap="onChangeTab">历史</view>
+    </view>
+
+    <block wx:if="{{activeTab === 'results'}}">
+      <view wx:if="{{!results.length}}" class="empty">还没有生成结果，先输入主题并点击“生成 3 条文案”</view>
+      <view wx:for="{{results}}" wx:key="id" class="card">
+        <view class="card-top">
+          <text class="card-title">{{item.title}}</text>
+          <text class="badge">{{item.platform}} · {{item.tone}}</text>
+        </view>
+        <text class="card-content">{{item.content}}</text>
+        <view wx:if="{{item.hashtags.length}}" class="tag-row">
+          <text wx:for="{{item.hashtags}}" wx:key="*this" class="tag">{{item}}</text>
+        </view>
+        <view class="actions">
+          <button size="mini" data-content="{{item.content}}" bindtap="onCopy">复制</button>
+          <button size="mini" data-id="{{item.id}}" bindtap="onRewrite">重写</button>
+          <button size="mini" data-id="{{item.id}}" bindtap="onToggleFavorite">{{item.favorite ? '已收藏' : '收藏'}}</button>
+        </view>
+      </view>
+    </block>
+
+    <block wx:if="{{activeTab === 'history'}}">
+      <view class="history-head">
+        <text>最近 {{history.length}} 条</text>
+        <text class="clear" bindtap="onClearHistory">清空</text>
+      </view>
+      <view wx:if="{{!history.length}}" class="empty">暂无历史生成记录</view>
+      <view wx:for="{{history}}" wx:key="id" class="history-item" data-history-id="{{item.id}}" bindtap="onUseHistory">
+        <view class="history-title">{{item.prompt.topic}} · {{item.prompt.platform}} · {{item.prompt.tone}}</view>
+        <text class="history-meta">{{item.prompt.scene || '无场景'}} | {{item.prompt.audience || '无受众'}} | {{item.results.length}} 条结果</text>
+      </view>
+    </block>
+  </view>
+</scroll-view>

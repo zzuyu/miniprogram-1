@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRANCH="$(git branch --show-current)"
+if [[ -z "$BRANCH" ]]; then
+  exit 0
+fi
+
+git push origin "$BRANCH" >/dev/null 2>&1 || {
+  echo "[post-commit] auto push failed. Run: git push origin $BRANCH"
+  exit 0
+}
+
+echo "[post-commit] pushed origin/$BRANCH"
