@@ -100,10 +100,11 @@ function buildMockResults(formData: FormData): CopyItem[] {
 
 function normalizeCopyItem(input: Partial<CopyItem>, formData: FormData, index: number): CopyItem {
   const now = Date.now() + index
+  const rawContent = typeof input.content === 'string' ? input.content : ''
   return {
     id: input.id || `copy_${now}_${index}`,
     title: input.title || `${formData.platform}风格 ${index + 1}`,
-    content: input.content || '',
+    content: sanitizeContent(rawContent),
     hashtags: Array.isArray(input.hashtags) ? input.hashtags.filter(Boolean) : [],
     platform: (input.platform as Platform) || formData.platform,
     tone: (input.tone as Tone) || formData.tone,
@@ -113,20 +114,47 @@ function normalizeCopyItem(input: Partial<CopyItem>, formData: FormData, index: 
 }
 
 function buildModelPrompt(formData: FormData): string {
+  const lengthHint =
+    formData.length === '短'
+      ? '每条 35-60 字'
+      : formData.length === '中'
+        ? '每条 60-110 字'
+        : '每条 110-180 字'
+
   return [
-    '你是中文社媒文案助手，擅长朋友圈/小红书/微博。',
-    '请基于以下信息生成 3 条文案候选，并仅输出 JSON 数组，不要输出其他解释。',
+    '你是资深中文社媒文案编辑，擅长朋友圈/小红书/微博。',
+    '任务：生成 3 条风格明显不同、可直接发布的文案。',
+    '必须遵守：',
+    '1) 仅输出 JSON 数组，不要任何解释文字。',
+    '2) 三条文案不能出现重复句、重复段、重复开头。',
+    '3) 语言自然，不要模板腔，不要出现“写给xx”“提醒自己”等固定套话。',
+    '4) 不要输出 markdown 代码块标记。',
     `平台：${formData.platform}`,
     `主题：${formData.topic}`,
     `场景：${formData.scene || '无'}`,
     `受众：${formData.audience || '无'}`,
     `语气：${formData.tone}`,
-    `长度：${formData.length}`,
+    `长度：${formData.length}（${lengthHint}）`,
     `是否包含 emoji：${formData.withEmoji ? '是' : '否'}`,
     `是否包含 hashtag：${formData.withHashtags ? '是' : '否'}`,
-    'JSON 数组内每个对象格式如下：',
-    '{"title":"", "content":"", "hashtags":[""], "platform":"", "tone":""}',
+    '输出结构（严格一致）：',
+    '[{"title":"","content":"","hashtags":[],"platform":"","tone":""}]',
   ].join('\n')
+}
+
+function sanitizeContent(content: string): string {
+  const lines = content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const seen = new Set<string>()
+  const deduped: string[] = []
+  for (const line of lines) {
+    if (seen.has(line)) continue
+    seen.add(line)
+    deduped.push(line)
+  }
+  return deduped.join('\n')
 }
 
 function extractJsonText(raw: string): string {
@@ -154,6 +182,7 @@ function parseModelItems(raw: string, formData: FormData): CopyItem[] {
   const normalized = parsed
     .map((item, index) => normalizeCopyItem((item || {}) as Partial<CopyItem>, formData, index))
     .filter((item) => !!item.content.trim())
+    .filter((item, index, arr) => arr.findIndex((x) => x.content === item.content) === index)
     .slice(0, 3)
 
   if (!normalized.length) {

@@ -37,6 +37,8 @@ Component({
     results: [] as CopyItem[],
     history: [] as HistoryItem[],
     activeTab: 'results',
+    showSourceTag: true,
+    lastGenerateSource: 'none',
   },
 
   lifetimes: {
@@ -144,6 +146,7 @@ Component({
           results,
           history: nextHistory,
           activeTab: 'results',
+          lastGenerateSource: generated.source,
         })
 
         try {

@@ -63,6 +63,9 @@
       <view class="tab {{activeTab === 'results' ? 'active' : ''}}" data-tab="results" bindtap="onChangeTab">结果</view>
       <view class="tab {{activeTab === 'history' ? 'active' : ''}}" data-tab="history" bindtap="onChangeTab">历史</view>
     </view>
+    <view wx:if="{{showSourceTag && lastGenerateSource !== 'none'}}" class="source-tip">
+      本次来源：{{lastGenerateSource === 'cloud' ? 'AI' : 'Mock'}}
+    </view>
 
     <block wx:if="{{activeTab === 'results'}}">
       <view wx:if="{{!results.length}}" class="empty">还没有生成结果，先输入主题并点击“生成 3 条文案”</view>
