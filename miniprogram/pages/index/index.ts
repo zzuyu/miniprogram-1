@@ -39,6 +39,7 @@ Component({
     activeTab: 'results',
     showSourceTag: true,
     lastGenerateSource: 'none',
+    lastGenerateReason: '',
   },
 
   lifetimes: {
@@ -147,6 +148,7 @@ Component({
           history: nextHistory,
           activeTab: 'results',
           lastGenerateSource: generated.source,
+          lastGenerateReason: generated.reason || '',
         })
 
         try {
