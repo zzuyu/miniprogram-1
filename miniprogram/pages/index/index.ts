@@ -157,7 +157,10 @@ Component({
         }
 
         if (generated.source === 'mock') {
-          wx.showToast({ title: '当前为Mock数据', icon: 'none' })
+          wx.showToast({
+            title: generated.reason ? `Mock(${generated.reason})` : '当前为Mock数据',
+            icon: 'none',
+          })
         }
       } catch (error) {
         console.error('generate failed', error)

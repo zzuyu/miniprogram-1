@@ -35,6 +35,7 @@ interface CloudGenerateResponse {
 interface GenerateResult {
   items: CopyItem[]
   source: 'mock' | 'cloud'
+  reason?: string
 }
 
 type GeneratorMode = 'mock' | 'cloud'
@@ -210,17 +211,25 @@ async function requestGenerateByCloudAI(formData: FormData): Promise<CloudGenera
   })
 
   let output = ''
-  for await (const event of res.eventStream as AsyncIterable<{ data: string }>) {
-    if (!event?.data) continue
-    if (event.data === '[DONE]') break
-    try {
-      const data = JSON.parse(event.data)
-      const text = data?.choices?.[0]?.delta?.content
-      if (text) {
-        output += text
+
+  // Prefer official text stream to avoid SSE event parsing incompatibilities.
+  if (res?.textStream && typeof res.textStream[Symbol.asyncIterator] === 'function') {
+    for await (const text of res.textStream as AsyncIterable<string>) {
+      if (text) output += text
+    }
+  } else if (res?.eventStream && typeof res.eventStream[Symbol.asyncIterator] === 'function') {
+    for await (const event of res.eventStream as AsyncIterable<{ data: string }>) {
+      if (!event?.data) continue
+      if (event.data === '[DONE]') break
+      try {
+        const data = JSON.parse(event.data)
+        const text = data?.choices?.[0]?.delta?.content
+        if (text) {
+          output += text
+        }
+      } catch (error) {
+        continue
       }
-    } catch (error) {
-      continue
     }
   }
 
@@ -249,6 +258,7 @@ export async function generateCopyCandidates(formData: FormData): Promise<Genera
     return {
       items: buildMockResults(formData),
       source: 'mock',
+      reason: 'FORCED_MOCK_MODE',
     }
   }
 
@@ -264,11 +274,13 @@ export async function generateCopyCandidates(formData: FormData): Promise<Genera
       source: 'cloud',
     }
   } catch (error) {
-    console.warn('cloud generate failed, fallback to mock', error)
+    const reason = error instanceof Error ? error.message : 'UNKNOWN_ERROR'
+    console.warn('cloud generate failed, fallback to mock', reason)
     await new Promise((resolve) => setTimeout(resolve, 300))
     return {
       items: buildMockResults(formData),
       source: 'mock',
+      reason,
     }
   }
 }
